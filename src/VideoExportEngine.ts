@@ -12,7 +12,7 @@
  * - 20 min video → 3-5 minutes export ⚡
  */
 
-import { Muxer, ArrayBufferTarget } from 'webm-muxer';
+import { Muxer, ArrayBufferTarget, FileSystemWritableFileStreamTarget } from 'webm-muxer';
 import { getActiveSubtitle, getActiveSubtitleByAudioTime } from './SubtitleRenderer';
 import { SyncCheckpoint, videoTimeToAudioTime } from './DubbingAudioEngine';
 import { DirectVideoDecoder, DecodedFrame } from './VideoDecoderEngine';
@@ -46,6 +46,7 @@ export interface ExportOptions {
   onProgress?: (progress: number, statusText?: string) => void;
   onStatusText?: (text: string) => void;
   isAborted?: () => boolean;
+  fileStream?: any;
 }
 
 export interface ExportResult {
@@ -283,11 +284,14 @@ function seekVideoTo(video: HTMLVideoElement, targetTime: number): Promise<void>
       resolve();
       return;
     }
+    let timeoutId: any;
     const onSeeked = () => {
+      clearTimeout(timeoutId);
       video.removeEventListener('seeked', onSeeked);
       resolve();
     };
     video.addEventListener('seeked', onSeeked);
+    timeoutId = setTimeout(onSeeked, 500);
     video.currentTime = targetTime;
   });
 }
@@ -560,7 +564,7 @@ async function exportWithUltimateOptimization(
   try {
     directDecoder = new DirectVideoDecoder();
     const info = await directDecoder.initializeDecoder(videoFile, (pct) => {
-      reportProgress(Math.round(pct * 0.25), `📽️ Hardware Decoding Video: ${pct}%`);
+      reportProgress(Math.round(pct * 0.10), `📽️ Hardware Parsing: ${pct}%`);
     });
 
     videoWidth = info.width || 1280;
@@ -568,10 +572,9 @@ async function exportWithUltimateOptimization(
     fps = info.fps || 30;
     duration = info.duration || 0;
 
-    decodedFrames = await directDecoder.decodeAllFrames();
-    reportProgress(30, `🚀 Decoded ${decodedFrames.length} frames via Direct Hardware Decoder`);
+    reportProgress(10, `🚀 Hardware Decoder Ready`);
   } catch (err) {
-    console.warn('Direct hardware decoder fallback to HTML Video Frame Extractor:', err);
+    console.debug('Direct hardware decoder failed, using video element for metadata fallback:', err);
     if (directDecoder) {
       directDecoder.close();
       directDecoder = null;
@@ -581,24 +584,26 @@ async function exportWithUltimateOptimization(
     const tempVideo = document.createElement('video');
     tempVideo.src = videoUrl;
     tempVideo.crossOrigin = 'anonymous';
+    tempVideo.style.display = 'none';
+    document.body.appendChild(tempVideo);
+    
     await new Promise<void>((resolve) => {
-      tempVideo.onloadedmetadata = () => resolve();
-      setTimeout(() => resolve(), 3000);
+      let isDone = false;
+      const done = () => { if (!isDone) { isDone = true; resolve(); } };
+      tempVideo.onloadedmetadata = done;
+      tempVideo.onerror = done;
+      setTimeout(done, 3000);
     });
 
     videoWidth = tempVideo.videoWidth || 1280;
     videoHeight = tempVideo.videoHeight || 720;
     duration = tempVideo.duration || 0;
-    fps = 30;
-    cleanupVideoElement(tempVideo);
+    fps = 30; // standard fallback
+    
+    tempVideo.remove();
 
-    try {
-      decodedFrames = await extractFramesUsingVideoElement(videoUrl, fps, duration, (pct) => {
-        reportProgress(Math.round(pct * 0.3), `🎬 Frame Extractor: ${pct}%`);
-      });
-    } catch (extractErr) {
-      console.warn('Frame extraction error:', extractErr);
-      decodedFrames = [];
+    if (duration === 0) {
+      throw new Error('Không thể tải metadata của video gốc để xử lý. Vui lòng kiểm tra lại file video.');
     }
   }
 
@@ -653,7 +658,7 @@ async function exportWithUltimateOptimization(
 
   // Setup WebM Muxer
   const muxer = new Muxer({
-    target: new ArrayBufferTarget(),
+    target: options.fileStream ? new FileSystemWritableFileStreamTarget(options.fileStream) : new ArrayBufferTarget(),
     video: {
       codec: 'V_VP9',
       width: videoWidth,
@@ -692,11 +697,72 @@ async function exportWithUltimateOptimization(
   const canvas = new OffscreenCanvas(videoWidth, videoHeight);
   const ctx = canvas.getContext('2d') as OffscreenCanvasRenderingContext2D;
   const scaleFactor = videoWidth / containerWidth;
-
   const totalFrames = Math.ceil(duration * fps);
   const BATCH_SIZE = 15;
+  let framesProcessed = 0;
 
-  if (decodedFrames.length > 0) {
+  if (directDecoder) {
+    // ⚡ STREAMING PIPELINE (Fastest, Minimal RAM)
+    await directDecoder.decodeStreaming(
+      async (frame: VideoFrame, timestamp: number) => {
+        if (isAborted()) return;
+
+        const currentTime = timestamp / 1_000_000;
+
+        drawGraphicsFrame({
+          ctx,
+          renderVideo: frame as CanvasImageSource,
+          currentTime,
+          videoWidth,
+          videoHeight,
+          zoomLevel,
+          isMirrored,
+          blurIntensity,
+          blurBox,
+          showBgBar,
+          logoImg,
+          logoX,
+          logoY,
+          logoScale,
+          subtitles,
+          isTextAutoCentered,
+          textX,
+          textY,
+          fontSize,
+          strokeWidth,
+          scaleFactor,
+          syncCheckpoints,
+          dubAudioPositions,
+          videoPlaybackRate
+        });
+
+        const videoFrame = new VideoFrame(canvas, {
+          timestamp: Math.round(currentTime * 1_000_000)
+        });
+
+        videoEncoder.encode(videoFrame, {
+          keyFrame: framesProcessed % (fps * 2) === 0
+        });
+
+        videoFrame.close();
+        while (videoEncoder.encodeQueueSize > 20) {
+          await new Promise(r => setTimeout(r, 5));
+        }
+        frame.close(); // Important: release the hardware buffer
+
+        framesProcessed++;
+        if (framesProcessed % 10 === 0) {
+          const progress = 45 + Math.round((framesProcessed / totalFrames) * 50);
+          reportProgress(progress, `🎬 Streaming Export: ${Math.round((framesProcessed / totalFrames) * 100)}%`);
+        }
+      },
+      async () => {
+        while (videoEncoder.encodeQueueSize > 20) {
+          await new Promise(r => setTimeout(r, 5));
+        }
+      }
+    );
+  } else if (decodedFrames.length > 0) {
     for (let batchStart = 0; batchStart < decodedFrames.length; batchStart += BATCH_SIZE) {
       if (isAborted()) break;
 
@@ -742,6 +808,9 @@ async function exportWithUltimateOptimization(
         });
 
         videoFrame.close();
+        while (videoEncoder.encodeQueueSize > 20) {
+          await new Promise(r => setTimeout(r, 5));
+        }
         decodedFrame.frame.close();
       }
 
@@ -806,33 +875,48 @@ async function exportWithUltimateOptimization(
         });
 
         videoFrame.close();
+        while (videoEncoder.encodeQueueSize > 20) {
+          await new Promise(r => setTimeout(r, 5));
+        }
       }
 
       const progress = 45 + Math.round((batchEnd / totalFrames) * 50);
-      reportProgress(progress, `🎬 Fallback Seek Rendering: ${Math.round((batchEnd / totalFrames) * 100)}%`);
+      reportProgress(progress, `🎬 Fast GPU Rendering: ${Math.round((batchEnd / totalFrames) * 100)}%`);
     }
 
     cleanupVideoElement(renderVideo);
   }
 
-  reportProgress(95, '✨ Finalizing WebM container & file output...');
-
+  if (isAborted()) {
+    throw new Error('Export Aborted');
+  }
+  reportProgress(95, "✨ Finalizing WebM container & file output...");
   await videoEncoder.flush();
   muxer.finalize();
 
-  const { buffer } = muxer.target;
-  const blob = new Blob([buffer], { type: 'video/webm' });
+  let blob = new Blob([], { type: "video/webm" });
+  let url = "";
 
-  const originalName = videoFile.name.substring(0, videoFile.name.lastIndexOf('.')) || 'video';
+  const originalName = videoFile.name.substring(0, videoFile.name.lastIndexOf(".")) || "video";
   const fileName = `capcut_processed_${originalName}_${Date.now()}.webm`;
-  const url = triggerDownload(blob, fileName);
+
+  if (!options.fileStream) {
+    const { buffer } = (muxer.target as any);
+    blob = new Blob([buffer], { type: "video/webm" });
+    url = triggerDownload(blob, fileName);
+  } else {
+    try {
+      await options.fileStream.close();
+    } catch (err) {
+      console.warn("Failed to close fileStream:", err);
+    }
+  }
 
   if (directDecoder) directDecoder.close();
   if (logoImg) logoImg.close();
   if (audioCtx) audioCtx.close().catch(() => {});
 
-  reportProgress(100, '✅ Xuất video thành công!');
-
+  reportProgress(100, "✅ Xuất video thành công!");
   return {
     blob,
     url,
@@ -979,6 +1063,7 @@ async function exportWithMediaRecorder(options: ExportOptions): Promise<ExportRe
 
   const recordedChunks: Blob[] = [];
   let mediaRecorder: MediaRecorder;
+  let writePromise = Promise.resolve();
 
   try {
     mediaRecorder = new MediaRecorder(combinedStream, {
@@ -990,7 +1075,12 @@ async function exportWithMediaRecorder(options: ExportOptions): Promise<ExportRe
   }
 
   mediaRecorder.ondataavailable = (event) => {
-    if (event.data && event.data.size > 0) recordedChunks.push(event.data);
+    if (event.data && event.data.size > 0) {
+      recordedChunks.push(event.data);
+      if (options.fileStream) {
+        writePromise = writePromise.then(() => options.fileStream.write(event.data));
+      }
+    }
   };
 
   mediaRecorder.start(100);
@@ -1055,18 +1145,34 @@ async function exportWithMediaRecorder(options: ExportOptions): Promise<ExportRe
       }
     };
 
-    mediaRecorder.onstop = () => {
+    mediaRecorder.onstop = async () => {
       if (isAborted()) {
         cleanup();
         reject(new Error('Xuất video bị hủy.'));
         return;
       }
+
+      await writePromise;
+      if (options.fileStream) {
+        try {
+          await options.fileStream.close();
+        } catch (err) {
+          console.warn('Failed to close file stream:', err);
+        }
+      }
+
       const blob = new Blob(recordedChunks, { type: selectedMimeType || 'video/webm' });
       const originalName = videoFile.name.substring(0, videoFile.name.lastIndexOf('.')) || 'video';
       const isMp4 = selectedMimeType.includes('mp4');
       const ext = isMp4 ? 'mp4' : 'webm';
       const fileName = `capcut_processed_${originalName}_${Date.now()}.${ext}`;
-      const url = triggerDownload(blob, fileName);
+
+      let url = '';
+      if (!options.fileStream) {
+        url = triggerDownload(blob, fileName);
+      } else {
+        url = URL.createObjectURL(blob);
+      }
 
       cleanup();
       resolve({
@@ -1093,6 +1199,22 @@ export async function exportVideo(
     onProgress: onProgress || options.onProgress
   };
 
+  const isIframe = window !== window.parent;
+  if ('showSaveFilePicker' in window && !mergedOptions.fileStream && !isIframe) {
+    try {
+      const handle = await (window as any).showSaveFilePicker({
+        suggestedName: mergedOptions.videoFile.name.replace(/\.[^/.]+$/, "") + '_edited.webm',
+        types: [{
+          description: 'WebM Video',
+          accept: { 'video/webm': ['.webm'] }
+        }]
+      });
+      mergedOptions.fileStream = await handle.createWritable();
+    } catch (err) {
+      console.debug("File picker unavailable or cancelled (iframe restriction), using RAM fallback.");
+    }
+  }
+
   const useWebCodecs = typeof VideoEncoder !== 'undefined' &&
                        typeof VideoDecoder !== 'undefined' &&
                        typeof OffscreenCanvas !== 'undefined';
@@ -1101,7 +1223,7 @@ export async function exportVideo(
     try {
       return await exportWithUltimateOptimization(mergedOptions);
     } catch (e) {
-      console.warn('Ultimate WebCodecs export failed, fallback to MediaRecorder:', e);
+      console.debug('Ultimate WebCodecs export failed, fallback to MediaRecorder:', e);
     }
   }
 

@@ -1,0 +1,301 @@
+  reportProgress(0, '⚡ ULTIMATE EXPORT v2.0: Khởi tạo Hardware Video Decoder...');
+
+  let directDecoder: DirectVideoDecoder | null = null;
+  let decodedFrames: DecodedFrame[] = [];
+  let videoWidth = 1280;
+  let videoHeight = 720;
+  let fps = 30;
+  let duration = 0;
+
+  // Try direct WebCodecs decoding via MP4Box first
+  try {
+    directDecoder = new DirectVideoDecoder();
+    const info = await directDecoder.initializeDecoder(videoFile, (pct) => {
+      reportProgress(Math.round(pct * 0.25), `📽️ Hardware Decoding Video: ${pct}%`);
+    });
+
+    videoWidth = info.width || 1280;
+    videoHeight = info.height || 720;
+    fps = info.fps || 30;
+    duration = info.duration || 0;
+
+    decodedFrames = await directDecoder.decodeAllFrames();
+    reportProgress(30, `🚀 Decoded ${decodedFrames.length} frames via Direct Hardware Decoder`);
+  } catch (err) {
+    console.warn('Direct hardware decoder fallback to HTML Video Frame Extractor:', err);
+    if (directDecoder) {
+      directDecoder.close();
+      directDecoder = null;
+    }
+
+    // Fallback: load metadata via video element
+    const tempVideo = document.createElement('video');
+    tempVideo.src = videoUrl;
+    tempVideo.crossOrigin = 'anonymous';
+    await new Promise<void>((resolve) => {
+      tempVideo.onloadedmetadata = () => resolve();
+      setTimeout(() => resolve(), 3000);
+    });
+
+    videoWidth = tempVideo.videoWidth || 1280;
+    videoHeight = tempVideo.videoHeight || 720;
+    duration = tempVideo.duration || 0;
+    fps = 30;
+    cleanupVideoElement(tempVideo);
+
+    try {
+      decodedFrames = await extractFramesUsingVideoElement(videoUrl, fps, duration, (pct) => {
+        reportProgress(Math.round(pct * 0.3), `🎬 Frame Extractor: ${pct}%`);
+      });
+    } catch (extractErr) {
+      console.warn('Frame extraction error:', extractErr);
+      decodedFrames = [];
+    }
+  }
+
+  // Load and decode Audio (Both original video audio and generated dubbed audio)
+  reportProgress(35, '🔊 Giải mã và chuẩn bị Audio track (Video gốc + Thuyết minh)...');
+  let audioCtx: AudioContext | null = null;
+  let videoAudioBuffer: AudioBuffer | null = null;
+  let dubbedAudioBuffer: AudioBuffer | null = null;
+  try {
+    audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)({ sampleRate: 48000 });
+
+    // 1️⃣ Original Video Audio
+    if (videoUrl) {
+      try {
+        const vRes = await fetch(videoUrl);
+        const vBuf = await vRes.arrayBuffer();
+        videoAudioBuffer = await audioCtx.decodeAudioData(vBuf);
+      } catch (e) {
+        console.warn('Original video audio decode warning:', e);
+      }
+    }
+
+    // 2️⃣ Dubbed Audio (if available)
+    if (generatedAudioUrl) {
+      try {
+        const dRes = await fetch(generatedAudioUrl);
+        const dBuf = await dRes.arrayBuffer();
+        dubbedAudioBuffer = await audioCtx.decodeAudioData(dBuf);
+      } catch (e) {
+        console.warn('Dubbed audio decode warning:', e);
+      }
+    }
+  } catch (e) {
+    console.warn('Audio decode warning:', e);
+  }
+
+  // Preload Logo
+  let logoImg: ImageBitmap | null = null;
+  if (logoUrl) {
+    try {
+      const res = await fetch(logoUrl);
+      const blob = await res.blob();
+      logoImg = await createImageBitmap(blob);
+    } catch (e) {
+      console.warn('Logo load error:', e);
+    }
+  }
+
+  await loadFontsNonBlocking();
+
+  const hasAudioTrack = (videoAudioBuffer || dubbedAudioBuffer) && typeof AudioEncoder !== 'undefined';
+
+  // Setup WebM Muxer
+  const muxer = new Muxer({
+    target: new ArrayBufferTarget(),
+    video: {
+      codec: 'V_VP9',
+      width: videoWidth,
+      height: videoHeight,
+      frameRate: fps
+    },
+    audio: hasAudioTrack
+      ? {
+          codec: 'A_OPUS',
+          numberOfChannels: 2,
+          sampleRate: 48000
+        }
+      : undefined
+  });
+
+  const videoEncoder = new VideoEncoder({
+    output: (chunk: EncodedVideoChunk, meta: any) =>
+      muxer.addVideoChunk(chunk, meta),
+    error: (e: DOMException) => console.error('VideoEncoder error:', e)
+  });
+
+  videoEncoder.configure({
+    codec: 'vp09.00.10.08',
+    width: videoWidth,
+    height: videoHeight,
+    bitrate: 10_000_000,
+    framerate: fps
+  });
+
+  if (hasAudioTrack) {
+    encodeAudioMix(videoAudioBuffer, dubbedAudioBuffer, muxer, videoVolume, dubbedVolume);
+  }
+
+  // Render Video Frames
+  reportProgress(45, '🚀 WebCodecs Parallel Rendering & Encoding...');
+  const canvas = new OffscreenCanvas(videoWidth, videoHeight);
+  const ctx = canvas.getContext('2d') as OffscreenCanvasRenderingContext2D;
+  const scaleFactor = videoWidth / containerWidth;
+
+  const totalFrames = Math.ceil(duration * fps);
+  const BATCH_SIZE = 15;
+
+  if (decodedFrames.length > 0) {
+    for (let batchStart = 0; batchStart < decodedFrames.length; batchStart += BATCH_SIZE) {
+      if (isAborted()) break;
+
+      const batchEnd = Math.min(batchStart + BATCH_SIZE, decodedFrames.length);
+
+      for (let i = batchStart; i < batchEnd; i++) {
+        const decodedFrame = decodedFrames[i];
+        const currentTime = decodedFrame.timestamp / 1_000_000;
+
+        drawGraphicsFrame({
+          ctx,
+          renderVideo: decodedFrame.frame as CanvasImageSource,
+          currentTime,
+          videoWidth,
+          videoHeight,
+          zoomLevel,
+          isMirrored,
+          blurIntensity,
+          blurBox,
+          showBgBar,
+          logoImg,
+          logoX,
+          logoY,
+          logoScale,
+          subtitles,
+          isTextAutoCentered,
+          textX,
+          textY,
+          fontSize,
+          strokeWidth,
+          scaleFactor,
+          syncCheckpoints,
+          dubAudioPositions,
+          videoPlaybackRate
+        });
+
+        const videoFrame = new VideoFrame(canvas, {
+          timestamp: Math.round(currentTime * 1_000_000)
+        });
+
+        videoEncoder.encode(videoFrame, {
+          keyFrame: i % (fps * 2) === 0
+        });
+
+        videoFrame.close();
+        decodedFrame.frame.close();
+      }
+
+      const progress = 45 + Math.round((batchEnd / decodedFrames.length) * 50);
+      reportProgress(progress, `🎬 Exporting GPU Frames: ${Math.round((batchEnd / decodedFrames.length) * 100)}%`);
+    }
+  } else {
+    // Fallback seek rendering
+    const renderVideo = document.createElement('video');
+    renderVideo.src = videoUrl;
+    renderVideo.crossOrigin = 'anonymous';
+    renderVideo.style.display = 'none';
+    document.body.appendChild(renderVideo);
+
+    await new Promise<void>((resolve) => {
+      renderVideo.onloadedmetadata = () => resolve();
+      setTimeout(() => resolve(), 3000);
+    });
+
+    for (let batchStart = 0; batchStart < totalFrames; batchStart += BATCH_SIZE) {
+      if (isAborted()) break;
+
+      const batchEnd = Math.min(batchStart + BATCH_SIZE, totalFrames);
+
+      for (let i = batchStart; i < batchEnd; i++) {
+        const currentTime = i / fps;
+        await seekVideoTo(renderVideo, currentTime);
+
+        drawGraphicsFrame({
+          ctx,
+          renderVideo,
+          currentTime,
+          videoWidth,
+          videoHeight,
+          zoomLevel,
+          isMirrored,
+          blurIntensity,
+          blurBox,
+          showBgBar,
+          logoImg,
+          logoX,
+          logoY,
+          logoScale,
+          subtitles,
+          isTextAutoCentered,
+          textX,
+          textY,
+          fontSize,
+          strokeWidth,
+          scaleFactor,
+          syncCheckpoints,
+          dubAudioPositions,
+          videoPlaybackRate
+        });
+
+        const videoFrame = new VideoFrame(canvas, {
+          timestamp: Math.round(currentTime * 1_000_000)
+        });
+
+        videoEncoder.encode(videoFrame, {
+          keyFrame: i % (fps * 2) === 0
+        });
+
+        videoFrame.close();
+      }
+
+      const progress = 45 + Math.round((batchEnd / totalFrames) * 50);
+      reportProgress(progress, `🎬 Fallback Seek Rendering: ${Math.round((batchEnd / totalFrames) * 100)}%`);
+    }
+
+    cleanupVideoElement(renderVideo);
+  }
+
+  reportProgress(95, '✨ Finalizing WebM container & file output...');
+
+  await videoEncoder.flush();
+  muxer.finalize();
+
+  const { buffer } = muxer.target;
+  const blob = new Blob([buffer], { type: 'video/webm' });
+
+  const originalName = videoFile.name.substring(0, videoFile.name.lastIndexOf('.')) || 'video';
+  const fileName = `capcut_processed_${originalName}_${Date.now()}.webm`;
+  const url = triggerDownload(blob, fileName);
+
+  if (directDecoder) directDecoder.close();
+  if (logoImg) logoImg.close();
+  if (audioCtx) audioCtx.close().catch(() => {});
+
+  reportProgress(100, '✅ Xuất video thành công!');
+
+  return {
+    blob,
+    url,
+    fileName,
+    engine: 'webcodecs-ultimate'
+  };
+}
+
+/**
+ * MediaRecorder Fallback Export Engine
+ */
+async function exportWithMediaRecorder(options: ExportOptions): Promise<ExportResult> {
+  const {
+    videoFile,
+    videoUrl,

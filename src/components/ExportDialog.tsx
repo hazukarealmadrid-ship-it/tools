@@ -1,5 +1,5 @@
 import React from 'react';
-import { Loader2, Download, X } from 'lucide-react';
+import { Loader2, Download, X, AlertTriangle } from 'lucide-react';
 import { useVideoProcessing } from '../contexts/VideoProcessingContext';
 
 export const ExportDialog: React.FC = () => {
@@ -11,6 +11,9 @@ export const ExportDialog: React.FC = () => {
   } = useVideoProcessing();
 
   if (!isExporting) return null;
+
+  // Detect if running inside iframe (AI Studio Preview)
+  const isIframe = window !== window.parent;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
@@ -34,7 +37,6 @@ export const ExportDialog: React.FC = () => {
             <span className="text-zinc-300">{exportStatusText || 'Đang render khung hình...'}</span>
             <span className="text-emerald-400 font-bold text-base">{exportProgress}%</span>
           </div>
-
           <div className="w-full bg-zinc-950 rounded-full h-3 overflow-hidden border border-zinc-800 p-0.5">
             <div
               className="bg-gradient-to-r from-emerald-600 to-emerald-400 h-full rounded-full transition-all duration-150 ease-out"
@@ -42,6 +44,16 @@ export const ExportDialog: React.FC = () => {
             />
           </div>
         </div>
+
+        {isIframe && (
+          <div className="p-3.5 bg-amber-950/40 border border-amber-900/50 rounded-xl flex items-start gap-3">
+            <AlertTriangle className="text-amber-500 shrink-0 mt-0.5" size={18} />
+            <p className="text-xs text-amber-200/80 leading-relaxed">
+              <strong className="text-amber-400 block mb-1">Mẹo tăng tốc xuất video:</strong>
+              Bạn đang dùng bản xem trước. Để không bị giới hạn bộ nhớ RAM và xuất file cực nhanh, hãy nhấn biểu tượng <strong>Mở trong Tab mới</strong> ở góc trên bên phải.
+            </p>
+          </div>
+        )}
 
         <div className="p-4 bg-zinc-950/80 border border-zinc-800/80 rounded-xl text-xs text-zinc-400 flex flex-col gap-1.5">
           <div className="flex items-center gap-2 text-zinc-300 font-medium">

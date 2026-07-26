@@ -5,9 +5,7 @@
  */
 
 import { Muxer, ArrayBufferTarget } from 'webm-muxer';
-import * as MP4BoxModule from 'mp4box';
-
-const MP4Box = (MP4BoxModule as any).default || MP4BoxModule;
+import * as MP4Box from 'mp4box';
 
 export interface DecodedFrame {
   frame: VideoFrame;
@@ -28,6 +26,34 @@ export class DirectVideoDecoder {
   private frameQueue: DecodedFrame[] = [];
   private decodedCount = 0;
   private totalFrames = 0;
+  private onFrameCallback?: (frame: VideoFrame, timestamp: number) => void;
+
+  static async getVideoFps(file: File): Promise<number> {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const mp4boxClient = (MP4Box && (MP4Box as any).createFile) ? MP4Box : (window as any).MP4Box;
+      if (!mp4boxClient || !mp4boxClient.createFile) {
+        return 30; // Fallback
+      }
+      const mp4box = mp4boxClient.createFile();
+      (arrayBuffer as any).fileStart = 0;
+      mp4box.appendBuffer(arrayBuffer);
+      mp4box.flush();
+      
+      const videoTracks = mp4box.getTracksByKind ? mp4box.getTracksByKind('video') : (mp4box.videoTracks || []);
+      if (!videoTracks.length) return 30;
+      
+      const track = videoTracks[0];
+      const timescale = track.timescale || 1000;
+      const timeperframe = track.samples?.[0]?.duration || track.movie_duration || 40;
+      
+      const fps = timescale / timeperframe;
+      return isNaN(fps) || fps <= 0 || !isFinite(fps) ? 30 : Math.round(fps * 100) / 100;
+    } catch (err) {
+      console.warn("Failed to extract fps:", err);
+      return 30;
+    }
+  }
 
   /**
    * ⚡ BREAKTHROUGH: Skip seeking entirely
@@ -50,10 +76,14 @@ export class DirectVideoDecoder {
     const codecString = this.generateCodecString(videoInfo);
     this.videoDecoder = new VideoDecoder({
       output: (frame) => {
-        this.frameQueue.push({
-          frame,
-          timestamp: frame.timestamp
-        });
+        if (this.onFrameCallback) {
+          this.onFrameCallback(frame, frame.timestamp);
+        } else {
+          this.frameQueue.push({
+            frame,
+            timestamp: frame.timestamp
+          });
+        }
         this.decodedCount++;
         if (onProgress) {
           onProgress(Math.round((this.decodedCount / this.totalFrames) * 100));
@@ -79,6 +109,45 @@ export class DirectVideoDecoder {
       duration: videoInfo.duration / 1000,
       fps: videoInfo.timescale / videoInfo.timeperframe
     };
+  }
+
+  /**
+   * ⚡ STREAMING DIRECT DECODE: Process frames immediately instead of buffering in RAM
+   */
+  async decodeStreaming(
+    onFrame: (frame: VideoFrame, timestamp: number) => void,
+    encoderQueueCheck: () => Promise<void>
+  ) {
+    if (!this.videoDecoder || !this.videoFile) {
+      throw new Error('Decoder not initialized');
+    }
+
+    this.onFrameCallback = onFrame;
+
+    // Extract video samples from MP4 file
+    const videoSamples = await this.extractVideoSamples(this.videoFile);
+
+    // Feed chunks to decoder with backpressure
+    for (const chunk of videoSamples) {
+      // Backpressure: don't push more if decoder queue is full
+      while (this.videoDecoder.decodeQueueSize > 15) {
+        await new Promise(r => setTimeout(r, 10));
+      }
+      
+      // External backpressure (Encoder)
+      await encoderQueueCheck();
+
+      const encodedChunk = new EncodedVideoChunk({
+        type: chunk.is_sync ? 'key' : 'delta',
+        timestamp: chunk.cts,
+        duration: chunk.duration,
+        data: chunk.data
+      });
+
+      this.videoDecoder.decode(encodedChunk);
+    }
+
+    await this.videoDecoder.flush();
   }
 
   /**

@@ -151,18 +151,29 @@ export const VideoProcessingProvider: React.FC<{ children: React.ReactNode }> = 
       resizeObserver.observe(videoState.containerRef.current);
     }
 
-    const renderPreview = () => {
+    let lastDrawTime = performance.now();
+
+    const renderPreview = (time: number) => {
+      animationFrameId = requestAnimationFrame(renderPreview);
+
+      const elapsed = time - lastDrawTime;
+      const frameInterval = 1000 / videoState.videoFps;
+
+      if (elapsed < frameInterval) {
+        return;
+      }
+      
+      lastDrawTime = time - (elapsed % frameInterval);
+
       const vw = canvas.width;
       const vh = canvas.height;
 
       if (vw === 0 || vh === 0) {
-        animationFrameId = requestAnimationFrame(renderPreview);
         return;
       }
 
       const ctx = canvas.getContext('2d');
       if (!ctx) {
-        animationFrameId = requestAnimationFrame(renderPreview);
         return;
       }
 
@@ -199,11 +210,12 @@ export const VideoProcessingProvider: React.FC<{ children: React.ReactNode }> = 
         syncCheckpoints: ttsPipeline.syncCheckpoints,
         videoPlaybackRate: videoState.videoPlaybackRate
       });
-
-      animationFrameId = requestAnimationFrame(renderPreview);
     };
 
-    animationFrameId = requestAnimationFrame(renderPreview);
+    animationFrameId = requestAnimationFrame((time) => {
+      lastDrawTime = time;
+      renderPreview(time);
+    });
 
     return () => {
       cancelAnimationFrame(animationFrameId);
@@ -212,7 +224,7 @@ export const VideoProcessingProvider: React.FC<{ children: React.ReactNode }> = 
       if (resizeObserver) resizeObserver.disconnect();
     };
   }, [
-    videoState.videoUrl, videoState.previewCanvasRef, videoState.videoElementRef, videoState.containerRef, videoState.audioElementRef, videoState.videoPlaybackRate,
+    videoState.videoUrl, videoState.previewCanvasRef, videoState.videoElementRef, videoState.containerRef, videoState.audioElementRef, videoState.videoPlaybackRate, videoState.videoFps,
     settings.blurIntensity, settings.fullWidthSpan, settings.autoChineseSubBlur, settings.zoomLevel, settings.isMirrored,
     ttsPipeline.subtitles, settings.isTextAutoCentered, settings.textX, settings.textY, settings.fontSize, settings.strokeWidth,
     videoState.logoUrl, settings.logoX, settings.logoY, settings.logoScale, settings.showBgBar,

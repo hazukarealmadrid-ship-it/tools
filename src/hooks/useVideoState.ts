@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { DirectVideoDecoder } from '../VideoDecoderEngine';
 
 export const useVideoState = () => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -12,6 +13,7 @@ export const useVideoState = () => {
   const [videoPlaybackRate, setVideoPlaybackRate] = useState(1);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [videoFps, setVideoFps] = useState(30);
 
   const videoElementRef = useRef<HTMLVideoElement>(null);
   const audioElementRef = useRef<HTMLAudioElement>(null);
@@ -24,9 +26,18 @@ export const useVideoState = () => {
     if (videoFile) {
       const url = URL.createObjectURL(videoFile);
       setVideoUrl(url);
+      
+      // Extract original fps
+      DirectVideoDecoder.getVideoFps(videoFile).then(fps => {
+        setVideoFps(fps);
+      }).catch(err => {
+        console.warn("Could not extract video fps", err);
+      });
+
       return () => URL.revokeObjectURL(url);
     } else {
       setVideoUrl(null);
+      setVideoFps(30);
     }
   }, [videoFile]);
 
@@ -88,7 +99,7 @@ export const useVideoState = () => {
     videoUrl, logoUrl,
     videoProgress, setVideoProgress,
     videoPlaybackRate, setVideoPlaybackRate,
-    currentTime, duration,
+    currentTime, duration, videoFps,
     videoElementRef, audioElementRef, containerRef, previewCanvasRef, logoImgRef, blurBoxRef,
     togglePlayPause, skipBackward, skipForward, seek, handleTimeUpdate
   };
