@@ -77,6 +77,131 @@ class LRUCache {
   }
 }
 
+// ============================================================
+// OPTIMIZATION #4: Circuit Breaker Pattern
+// ============================================================
+type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
+
+class CircuitBreaker {
+  private state: CircuitState = "CLOSED";
+  private failureThreshold: number;
+  private resetTimeoutMs: number;
+  private failureCount: number = 0;
+  private lastFailureTime: number = 0;
+
+  constructor(failureThreshold: number = 3, resetTimeoutMs: number = 30000) {
+    this.failureThreshold = failureThreshold;
+    this.resetTimeoutMs = resetTimeoutMs;
+  }
+
+  getState(): CircuitState {
+    if (this.state === "OPEN") {
+      const now = Date.now();
+      if (now - this.lastFailureTime >= this.resetTimeoutMs) {
+        this.state = "HALF_OPEN";
+        console.log("⚡ [CircuitBreaker] Transitioned to HALF_OPEN state. Testing single request...");
+      }
+    }
+    return this.state;
+  }
+
+  async execute<T>(fn: () => Promise<T>): Promise<T> {
+    const currentState = this.getState();
+
+    if (currentState === "OPEN") {
+      const remainingMs = Math.ceil((this.resetTimeoutMs - (Date.now() - this.lastFailureTime)) / 1000);
+      console.warn(`⚠️ [CircuitBreaker] Circuit is OPEN! Request rejected. Retry in ${remainingMs}s`);
+      throw new Error(`Dịch vụ TTS tạm thời ngưng do sự cố kết nối. Vui lòng thử lại sau ${remainingMs} giây.`);
+    }
+
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (err) {
+      this.onFailure();
+      throw err;
+    }
+  }
+
+  private onSuccess(): void {
+    if (this.state === "HALF_OPEN" || this.failureCount > 0) {
+      console.log("✅ [CircuitBreaker] Request succeeded. Resetting circuit to CLOSED.");
+    }
+    this.failureCount = 0;
+    this.state = "CLOSED";
+  }
+
+  private onFailure(): void {
+    this.failureCount++;
+    this.lastFailureTime = Date.now();
+    console.warn(`⚠️ [CircuitBreaker] Failure logged (${this.failureCount}/${this.failureThreshold}).`);
+
+    if (this.failureCount >= this.failureThreshold) {
+      this.state = "OPEN";
+      console.error(`🚨 [ALERT] CircuitBreaker trip triggered! Circuit is now OPEN for ${this.resetTimeoutMs / 1000}s.`);
+    }
+  }
+}
+
+// ============================================================
+// OPTIMIZATION #5: Request Deduplication & Metrics
+// ============================================================
+class RequestDeduplicator<T> {
+  private pendingRequests = new Map<string, Promise<T>>();
+
+  async execute(key: string, fn: () => Promise<T>): Promise<{ result: T; deduplicated: boolean }> {
+    if (this.pendingRequests.has(key)) {
+      console.log(`🔁 [Deduplicator] Sharing pending request for key: "${key.substring(0, 30)}..."`);
+      const result = await this.pendingRequests.get(key)!;
+      return { result, deduplicated: true };
+    }
+
+    const promise = fn().finally(() => {
+      this.pendingRequests.delete(key);
+    });
+
+    this.pendingRequests.set(key, promise);
+    const result = await promise;
+    return { result, deduplicated: false };
+  }
+}
+
+class MetricsLogger {
+  private hits = 0;
+  private misses = 0;
+  private deduplicated = 0;
+  private totalRequests = 0;
+  private totalResponseTimeMs = 0;
+
+  logHit(): void {
+    this.hits++;
+    this.totalRequests++;
+  }
+
+  logMiss(responseTimeMs: number, wasDeduplicated: boolean = false): void {
+    this.misses++;
+    this.totalRequests++;
+    this.totalResponseTimeMs += responseTimeMs;
+    if (wasDeduplicated) {
+      this.deduplicated++;
+    }
+  }
+
+  getStats() {
+    const total = this.totalRequests || 1;
+    const avgResponseTime = this.misses ? Math.round(this.totalResponseTimeMs / this.misses) : 0;
+    return {
+      totalRequests: this.totalRequests,
+      cacheHits: this.hits,
+      cacheMisses: this.misses,
+      deduplicatedRequests: this.deduplicated,
+      hitRatio: `${((this.hits / total) * 100).toFixed(1)}%`,
+      avgResponseTimeMs: `${avgResponseTime}ms`
+    };
+  }
+}
+
 /**
  * Gọi API CapCut / TikTok TTS với timeout 6000ms & retry tối đa 2 lần mỗi endpoint
  * OPTIMIZATION #2: Faster request with AbortController cleanup (Fix: RC#9)
@@ -146,11 +271,23 @@ async function startServer() {
 
   app.use(express.json({ limit: "10mb" }));
 
-  // Initialize LRU Cache
+  // Initialize Cache, Resilience & Metrics
   const ttsCache = new LRUCache(MAX_CACHE_SIZE, MAX_CACHE_DURATION);
+  const circuitBreaker = new CircuitBreaker(3, 30000); // 3 failures -> 30s pause
+  const deduplicator = new RequestDeduplicator<TtsResult>();
+  const metricsLogger = new MetricsLogger();
 
   // OPTIMIZATION #3: Optimize Gemini API calls - add caching for same image frame (Fix: RC#10)
   const geminiDetectionCache = new Map<string, any>();
+
+  // API endpoint for metrics & monitoring
+  app.get("/api/metrics", (req, res) => {
+    return res.json({
+      circuitBreakerState: circuitBreaker.getState(),
+      metrics: metricsLogger.getStats(),
+      cacheSize: ttsCache['cache'].size
+    });
+  });
 
   // API endpoint for Gemini Subtitle OCR & Detection
   app.post("/api/detect-subtitle", async (req, res) => {
@@ -164,7 +301,7 @@ async function startServer() {
       const frameHash = imageBase64.substring(0, 50); // First 50 chars as signature
       if (geminiDetectionCache.has(frameHash)) {
         const cached = geminiDetectionCache.get(frameHash);
-        if (Date.now() - cached.timestamp < 1000) { // 1 second TTL
+        if (Date.now() - cached.timestamp < 2000) { // 2 seconds TTL
           return res.json(cached.result);
         }
       }
@@ -243,7 +380,7 @@ Ensure 'y' is strictly within 80 to 95 percentage range.`;
 
       const result = { y, height, width, x, rawText: jsonText };
 
-      // Cache result with short TTL
+      // Cache result with 2s TTL
       geminiDetectionCache.set(frameHash, { result, timestamp: Date.now() });
 
       return res.json(result);
@@ -259,10 +396,10 @@ Ensure 'y' is strictly within 80 to 95 percentage range.`;
     }
   });
 
-  // CapCut / TikTok TTS API Proxy Route (Giọng BV074_streaming cố định)
+  // CapCut / TikTok TTS API Proxy Route with LRU Cache + Deduplication + Circuit Breaker
   app.post("/api/tts/speak", async (req, res) => {
     try {
-      const { text, sessionId = "3805a2f884764f5cd3d5393136d15802" } = req.body;
+      const { text, sessionId = DEFAULT_SESSION_ID } = req.body;
       if (!text || typeof text !== "string") {
         return res.status(400).json({ error: "Missing or invalid text parameter" });
       }
@@ -271,26 +408,36 @@ Ensure 'y' is strictly within 80 to 95 percentage range.`;
       const normalizedText = text.trim().toLowerCase();
       const cacheKey = `${voiceCode}:${normalizedText}`;
 
-      // Check LRU cache with TTL
+      // 1. Check LRU cache
       if (ttsCache.has(cacheKey)) {
-        const cached = ttsCache.get(cacheKey);
+        metricsLogger.logHit();
+        const cached = ttsCache.get(cacheKey)!;
         return res.json({
           status: "success",
-          audioBase64: cached!.audioBase64,
-          duration: cached!.duration,
-          speaker: cached!.speaker,
+          audioBase64: cached.audioBase64,
+          duration: cached.duration,
+          speaker: cached.speaker,
           cached: true
         });
       }
 
-      const result = await fetchCapCutTTS(text, voiceCode, sessionId, 6000);
+      // 2. Execute via Deduplicator + CircuitBreaker
+      const startTime = Date.now();
+      const { result, deduplicated } = await deduplicator.execute(cacheKey, async () => {
+        return await circuitBreaker.execute(() => fetchCapCutTTS(text, voiceCode, sessionId, 6000));
+      });
+
+      const responseTimeMs = Date.now() - startTime;
+      metricsLogger.logMiss(responseTimeMs, deduplicated);
       ttsCache.set(cacheKey, result);
 
       return res.json({
         status: "success",
         audioBase64: result.audioBase64,
         duration: result.duration,
-        speaker: result.speaker
+        speaker: result.speaker,
+        cached: false,
+        deduplicated
       });
     } catch (err: any) {
       console.error("TikTok TTS Proxy Error:", err);
@@ -304,7 +451,7 @@ Ensure 'y' is strictly within 80 to 95 percentage range.`;
   // Proxy phụ cho route Google TTS cũ (đồng bộ về CapCut TTS)
   app.post('/api/tts/google/speak', async (req, res) => {
     try {
-      const { text, sessionId = "3805a2f884764f5cd3d5393136d15802" } = req.body;
+      const { text, sessionId = DEFAULT_SESSION_ID } = req.body;
       if (!text || typeof text !== "string") {
         return res.status(400).json({ error: "Missing or invalid text parameter" });
       }
@@ -314,24 +461,33 @@ Ensure 'y' is strictly within 80 to 95 percentage range.`;
       const cacheKey = `${voiceCode}:${normalizedText}`;
 
       if (ttsCache.has(cacheKey)) {
-        const cached = ttsCache.get(cacheKey);
+        metricsLogger.logHit();
+        const cached = ttsCache.get(cacheKey)!;
         return res.json({
           status: "success",
-          audioBase64: cached!.audioBase64,
-          duration: cached!.duration,
-          speaker: cached!.speaker,
+          audioBase64: cached.audioBase64,
+          duration: cached.duration,
+          speaker: cached.speaker,
           cached: true
         });
       }
 
-      const result = await fetchCapCutTTS(text, voiceCode, sessionId, 6000);
+      const startTime = Date.now();
+      const { result, deduplicated } = await deduplicator.execute(cacheKey, async () => {
+        return await circuitBreaker.execute(() => fetchCapCutTTS(text, voiceCode, sessionId, 6000));
+      });
+
+      const responseTimeMs = Date.now() - startTime;
+      metricsLogger.logMiss(responseTimeMs, deduplicated);
       ttsCache.set(cacheKey, result);
 
       return res.json({
         status: "success",
         audioBase64: result.audioBase64,
         duration: result.duration,
-        speaker: result.speaker
+        speaker: result.speaker,
+        cached: false,
+        deduplicated
       });
     } catch (err: any) {
       console.error("Google TTS Fallback Endpoint Error:", err);
