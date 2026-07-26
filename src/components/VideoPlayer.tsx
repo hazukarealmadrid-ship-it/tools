@@ -82,6 +82,10 @@ export const VideoPlayer: React.FC = () => {
     setIsMirrored,
     volume,
     setVolume,
+    videoVolume,
+    setVideoVolume,
+    dubbedVolume,
+    setDubbedVolume,
     isTextAutoCentered,
     setIsTextAutoCentered,
     showBgBar
@@ -737,14 +741,55 @@ export const VideoPlayer: React.FC = () => {
           )}
 
           {activePanel === 'volume' && (
-            <div className="w-full max-w-lg p-5 border border-zinc-800 bg-zinc-900 rounded-xl flex flex-col gap-4 animate-in fade-in slide-in-from-top-2">
-              <label className="flex flex-col gap-3 text-sm font-medium text-zinc-300">
-                <div className="flex justify-between">
-                  <span>Âm lượng (Volume)</span>
-                  <span className="text-emerald-400">{volume > 0 ? '+' : ''}{volume}%</span>
+            <div className="w-full max-w-lg p-5 border border-zinc-800 bg-zinc-900 rounded-xl flex flex-col gap-5 animate-in fade-in slide-in-from-top-2 shadow-xl">
+              <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
+                  <Volume2 size={18} />
+                  <span>Điều chỉnh Âm lượng (Volume Controls)</span>
                 </div>
-                <input type="range" min="-50" max="50" value={volume} onChange={e => setVolume(Number(e.target.value))} className="accent-emerald-500 w-full" />
-              </label>
+              </div>
+
+              <div className="flex flex-col gap-4">
+                {/* Original Video Volume */}
+                <div className="flex flex-col gap-2 bg-zinc-950 p-3.5 border border-zinc-800/80 rounded-lg">
+                  <div className="flex justify-between items-center text-xs font-semibold text-zinc-300">
+                    <span>Âm lượng Video gốc</span>
+                    <span className="text-emerald-400 font-bold font-mono">
+                      {videoVolume > 0 ? '+' : ''}{videoVolume}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-50"
+                    max="50"
+                    value={videoVolume}
+                    onChange={e => {
+                      const val = Number(e.target.value);
+                      setVideoVolume(val);
+                      setVolume(val);
+                    }}
+                    className="accent-emerald-500 w-full cursor-pointer h-1.5 bg-zinc-800 rounded-lg"
+                  />
+                </div>
+
+                {/* Dubbed Audio Volume */}
+                <div className="flex flex-col gap-2 bg-zinc-950 p-3.5 border border-zinc-800/80 rounded-lg">
+                  <div className="flex justify-between items-center text-xs font-semibold text-zinc-300">
+                    <span>Âm lượng Lồng tiếng (Thuyết minh)</span>
+                    <span className="text-emerald-400 font-bold font-mono">
+                      {dubbedVolume > 0 ? '+' : ''}{dubbedVolume}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-50"
+                    max="50"
+                    value={dubbedVolume}
+                    onChange={e => setDubbedVolume(Number(e.target.value))}
+                    className="accent-emerald-500 w-full cursor-pointer h-1.5 bg-zinc-800 rounded-lg"
+                  />
+                </div>
+              </div>
             </div>
           )}
         </div>

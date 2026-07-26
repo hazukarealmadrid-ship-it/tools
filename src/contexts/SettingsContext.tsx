@@ -28,6 +28,10 @@ interface SettingsContextType {
   setIsMirrored: React.Dispatch<React.SetStateAction<boolean>>;
   volume: number;
   setVolume: React.Dispatch<React.SetStateAction<number>>;
+  videoVolume: number;
+  setVideoVolume: React.Dispatch<React.SetStateAction<number>>;
+  dubbedVolume: number;
+  setDubbedVolume: React.Dispatch<React.SetStateAction<number>>;
   isTextAutoCentered: boolean;
   setIsTextAutoCentered: React.Dispatch<React.SetStateAction<boolean>>;
   isEditing: boolean;
@@ -62,6 +66,8 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [zoomLevel, setZoomLevel] = useState(100);
   const [isMirrored, setIsMirrored] = useState(false);
   const [volume, setVolume] = useState(0);
+  const [videoVolume, setVideoVolume] = useState(0);
+  const [dubbedVolume, setDubbedVolume] = useState(0);
   const [isTextAutoCentered, setIsTextAutoCentered] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
@@ -87,6 +93,8 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         zoomLevel, setZoomLevel,
         isMirrored, setIsMirrored,
         volume, setVolume,
+        videoVolume, setVideoVolume,
+        dubbedVolume, setDubbedVolume,
         isTextAutoCentered, setIsTextAutoCentered,
         isEditing, setIsEditing,
         showTimeline, setShowTimeline,

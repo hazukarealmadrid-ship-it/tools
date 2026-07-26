@@ -37,6 +37,8 @@ export interface ExportOptions {
   fontSize: number;
   strokeWidth: number;
   volume: number;
+  videoVolume?: number;
+  dubbedVolume?: number;
   containerWidth: number;
   syncCheckpoints: SyncCheckpoint[];
   dubAudioPositions: number[];

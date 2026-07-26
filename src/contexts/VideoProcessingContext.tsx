@@ -69,16 +69,12 @@ export const VideoProcessingProvider: React.FC<{ children: React.ReactNode }> = 
   // Audio volume sync
   useEffect(() => {
     if (videoState.videoElementRef.current) {
-      if (ttsPipeline.generatedAudioUrl) {
-        videoState.videoElementRef.current.volume = 0;
-      } else {
-        videoState.videoElementRef.current.volume = Math.max(0, Math.min(1, (settings.volume + 50) / 100));
-      }
+      videoState.videoElementRef.current.volume = Math.max(0, Math.min(1, (settings.videoVolume + 50) / 50));
     }
     if (videoState.audioElementRef.current) {
-      videoState.audioElementRef.current.volume = Math.max(0, Math.min(1, (settings.volume + 50) / 100));
+      videoState.audioElementRef.current.volume = Math.max(0, Math.min(1, (settings.dubbedVolume + 50) / 50));
     }
-  }, [settings.volume, ttsPipeline.generatedAudioUrl, videoState.videoElementRef, videoState.audioElementRef]);
+  }, [settings.videoVolume, settings.dubbedVolume, videoState.videoElementRef, videoState.audioElementRef]);
 
   // Playback rate sync
   useEffect(() => {
@@ -266,6 +262,8 @@ export const VideoProcessingProvider: React.FC<{ children: React.ReactNode }> = 
       fontSize: settings.fontSize,
       strokeWidth: settings.strokeWidth,
       volume: settings.volume,
+      videoVolume: settings.videoVolume,
+      dubbedVolume: settings.dubbedVolume,
       containerWidth: videoState.containerRef.current?.clientWidth || 800,
       syncCheckpoints: ttsPipeline.syncCheckpoints,
       dubAudioPositions: ttsPipeline.dubAudioPositions

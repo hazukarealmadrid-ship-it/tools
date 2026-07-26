@@ -105,7 +105,7 @@ export const useTTSPipeline = (
     setLoadingSegmentIndex(index);
     let played = false;
 
-    const cacheKey = `google_tts:${voiceProfile.name}:${text.trim()}`;
+    const cacheKey = `capcut_tts:${voiceProfile.name}:${text.trim()}`;
     if (audioCacheRef.current.has(cacheKey)) {
       const cachedUrl = audioCacheRef.current.get(cacheKey)!;
       try {
@@ -120,10 +120,14 @@ export const useTTSPipeline = (
     }
 
     try {
-      const response = await fetch('/api/tts/google/speak', {
+      const response = await fetch('/api/tts/speak', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, voiceProfile })
+        body: JSON.stringify({
+          text,
+          voice: voiceProfile.name || 'BV074_streaming',
+          sessionId
+        })
       });
 
       const data = await response.json();

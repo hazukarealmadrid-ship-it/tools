@@ -61,12 +61,11 @@ export const VIETNAM_VOICE_PROFILES: Record<string, VoiceConfig> = {
 // ============================================================
 // TTS ENGINE: CapCut Voice Synthesis (BV074_streaming)
 // ============================================================
-export async function generateVoiceWithGoogle(
+export async function generateVoiceWithCapCut(
   text: string,
   voiceProfile: VoiceConfig,
   sessionId?: string
 ): Promise<{ audioBase64: string; duration: number }> {
-  // [FIXED] Loại bỏ _apiKey parameter dư thừa không dùng
   const activeSessionId = sessionId || voiceProfile.sessionId || '3805a2f884764f5cd3d5393136d15802';
 
   const response = await fetch('/api/tts/speak', {
@@ -74,7 +73,7 @@ export async function generateVoiceWithGoogle(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       text,
-      voice: 'BV074_streaming',
+      voice: voiceProfile.name || 'BV074_streaming',
       sessionId: activeSessionId
     })
   });
@@ -94,6 +93,9 @@ export async function generateVoiceWithGoogle(
     duration: data.duration || 0
   };
 }
+
+// Backward compatibility alias if needed internally
+export const generateVoiceWithGoogle = generateVoiceWithCapCut;
 
 // ============================================================
 // INTEGRATION: Tải audio buffer cho từng phân đoạn

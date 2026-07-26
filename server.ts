@@ -448,56 +448,6 @@ Ensure 'y' is strictly within 80 to 95 percentage range.`;
     }
   });
 
-  // Proxy phụ cho route Google TTS cũ (đồng bộ về CapCut TTS)
-  app.post('/api/tts/google/speak', async (req, res) => {
-    try {
-      const { text, sessionId = DEFAULT_SESSION_ID } = req.body;
-      if (!text || typeof text !== "string") {
-        return res.status(400).json({ error: "Missing or invalid text parameter" });
-      }
-
-      const voiceCode = "BV074_streaming";
-      const normalizedText = text.trim().toLowerCase();
-      const cacheKey = `${voiceCode}:${normalizedText}`;
-
-      if (ttsCache.has(cacheKey)) {
-        metricsLogger.logHit();
-        const cached = ttsCache.get(cacheKey)!;
-        return res.json({
-          status: "success",
-          audioBase64: cached.audioBase64,
-          duration: cached.duration,
-          speaker: cached.speaker,
-          cached: true
-        });
-      }
-
-      const startTime = Date.now();
-      const { result, deduplicated } = await deduplicator.execute(cacheKey, async () => {
-        return await circuitBreaker.execute(() => fetchCapCutTTS(text, voiceCode, sessionId, 6000));
-      });
-
-      const responseTimeMs = Date.now() - startTime;
-      metricsLogger.logMiss(responseTimeMs, deduplicated);
-      ttsCache.set(cacheKey, result);
-
-      return res.json({
-        status: "success",
-        audioBase64: result.audioBase64,
-        duration: result.duration,
-        speaker: result.speaker,
-        cached: false,
-        deduplicated
-      });
-    } catch (err: any) {
-      console.error("Google TTS Fallback Endpoint Error:", err);
-      return res.status(500).json({
-        status: "error",
-        message: err.message || "TTS synthesis failed"
-      });
-    }
-  });
-
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
